@@ -3,14 +3,14 @@ name: Build and Push Docker Image
 on:
     push:
         branches:
-            - docker # 当推送到 docker 分支时触发
+            - docker
 
 jobs:
     build-and-push:
         runs-on: ubuntu-latest
         permissions:
             contents: read
-            packages: write # 给予推送镜像到 GHCR 的权限
+            packages: write
 
         steps:
             - name: Checkout code
@@ -42,6 +42,5 @@ jobs:
                   push: true
                   tags: ${{ steps.meta.outputs.tags }}
                   labels: ${{ steps.meta.outputs.labels }}
-                  # 开启 GitHub Actions 构建缓存，加速后续构建
                   cache-from: type=gha
                   cache-to: type=gha,mode=max
