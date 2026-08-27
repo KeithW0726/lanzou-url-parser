@@ -9,9 +9,8 @@ ENV PORT=3000
 COPY package*.json ./
 RUN npm install --only=production
 
-# 复制宿主机 Action 刚编译好的 .next 产物和 public 静态资源
+# 复制宿主机 Action 刚编译好的 Next.js 产物
 COPY .next ./.next
-COPY public ./public
 
 EXPOSE 3000
 
