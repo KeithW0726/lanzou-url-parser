@@ -17,7 +17,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 新增：设置 QEMU 模拟器，用于跨架构编译 ARM64 镜像
+      # 1. 在 Runner 宿主机上配置 Node.js 环境（原生速度，极快）
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      # 2. 原生执行依赖安装与 Next.js 打包（几秒到几十秒内完成）
+      - name: Install dependencies and Build
+        run: |
+          npm ci
+          npm run build
+
+      # 3. 设置跨架构构建支持
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -39,14 +52,15 @@ jobs:
           tags: |
             type=raw,value=latest
 
-      # 2. 修改：增加 platforms 声明，同时构建 amd64 和 arm64
+      # 4. 将编译好的 `.next` 产物打包进支持多架构的 Docker 镜像中
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
