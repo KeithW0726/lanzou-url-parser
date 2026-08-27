@@ -17,20 +17,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 在 Runner 宿主机上配置 Node.js 环境（原生速度，极快）
+      # 1. 在 Runner 宿主机上配置 Node.js 24 环境
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: "npm"
+          node-version: 24
 
-      # 2. 原生执行依赖安装与 Next.js 打包（几秒到几十秒内完成）
+      # 2. 原生快速安装依赖并执行 Next.js 编译打包
       - name: Install dependencies and Build
         run: |
-          npm ci
+          npm install
           npm run build
 
-      # 3. 设置跨架构构建支持
+      # 3. 配置 QEMU 与 Docker Buildx（用于跨架构构建）
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -52,7 +51,7 @@ jobs:
           tags: |
             type=raw,value=latest
 
-      # 4. 将编译好的 `.next` 产物打包进支持多架构的 Docker 镜像中
+      # 4. 打包宿主机编译好的产物为多架构（amd64 / arm64）镜像并推送到 GHCR
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
