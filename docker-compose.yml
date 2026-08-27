@@ -1,14 +1,10 @@
 services:
   lanzou-parser:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/keithw0726/lanzou-url-parser:latest
     container_name: lanzou-url-parser
-
     ports:
-      - "3000:3000" # 将容器内的 3000 端口映射到宿主机的 3000 端口
+      - "3000:3000"
     restart: unless-stopped
-
     environment:
       - NODE_ENV=production
       - PORT=3000
