@@ -1,5 +1,9 @@
 import type { AjaxmResponse, LanzouClient, ParseResult } from "./types";
-import { createLanzouClient, getHeaders } from "./lanzouHttpClient";
+import {
+  createLanzouClient,
+  getHeaders,
+  resolveDirectUrl,
+} from "./lanzouHttpClient";
 import * as cheerio from "cheerio";
 
 /**
@@ -85,7 +89,7 @@ async function parseLanzouUrl(params: {
         }
 
         fileName = postResult.inf || fileName;
-        return await handleFinalUrl(client, postResult, {
+        return await handleFinalUrl(postResult, {
           fileName,
           fileSize,
           rename: rename || "",
@@ -134,7 +138,7 @@ async function parseLanzouUrl(params: {
         continue;
       }
 
-      return await handleFinalUrl(client, postResult, {
+      return await handleFinalUrl(postResult, {
         fileName,
         fileSize,
         rename: rename || "",
@@ -183,7 +187,10 @@ async function getAjaxResult(
   fileInfo: { path: string; fileId: string },
   payload: Record<string, string | number>,
 ): Promise<AjaxmResponse> {
-  const postUrl = `${baseUrl}${fileInfo.path}${fileInfo.fileId}`;
+  // 新版页面返回跨域绝对地址（apifile.lanzouw.com），不能再拼 baseUrl
+  const postUrl = /^https?:\/\//.test(fileInfo.path)
+    ? `${fileInfo.path}${fileInfo.fileId}`
+    : `${baseUrl}${fileInfo.path}${fileInfo.fileId}`;
   const res = await client.postWithAcwRetry(
     postUrl,
     new URLSearchParams(
@@ -208,7 +215,6 @@ async function getAjaxResult(
  * 处理最终直链
  */
 async function handleFinalUrl(
-  client: LanzouClient,
   data: AjaxmResponse,
   {
     fileName,
@@ -217,8 +223,11 @@ async function handleFinalUrl(
     type,
   }: { fileName: string; fileSize: string; rename: string; type: string },
 ): Promise<ParseResult> {
-  const downUrl1 = `${data.dom}/file/${data.url}`;
-  const finalUrl = await resolveFinalUrl(client, downUrl1);
+  const jumpUrl = `${data.dom}/file/${data.url}`;
+  const directUrl = await resolveDirectUrl(jumpUrl);
+  // 解析不到直链时回退到跳转链接，由浏览器完成剩余的跳转
+  const finalUrl = stripPidParam(directUrl || jumpUrl);
+
   if (type === "down") {
     return { code: 0, msg: "跳转下载", data: { redirect: finalUrl } };
   }
@@ -230,37 +239,21 @@ async function handleFinalUrl(
 }
 
 /**
- * 通过 HEAD 请求解析跳转后的直链（自动处理 acw_sc__v2）
+ * 去掉 pid 参数：该参数会暴露 CDN 的真实 IP
  */
-async function resolveFinalUrl(
-  client: LanzouClient,
-  url: string,
-): Promise<string> {
-  try {
-    const res = await client.headWithAcwRetry(url, {
-      headers: getHeaders(url, new URL(url).hostname),
-      maxRedirects: 0,
-      validateStatus: (s: number) => s >= 200 && s < 400,
-    });
-    return (res.headers.location as string | undefined) ?? url;
-  } catch (err: unknown) {
-    if (
-      err instanceof Object &&
-      "response" in err &&
-      err.response instanceof Object &&
-      "status" in err.response &&
-      typeof err.response.status === "number" &&
-      err.response.status >= 300 &&
-      err.response.status < 400 &&
-      "headers" in err.response &&
-      err.response.headers instanceof Object &&
-      "location" in err.response.headers
-    ) {
-      return (err.response.headers as Record<string, string>).location ?? url;
-    }
-    console.error("解析最终URL失败:", err instanceof Error ? err.message : err);
-    return url;
-  }
+function stripPidParam(url: string): string {
+  const queryIndex = url.indexOf("?");
+  if (queryIndex === -1) return url;
+
+  const query = url
+    .slice(queryIndex + 1)
+    .split("&")
+    .filter((param) => !param.startsWith("pid="))
+    .join("&");
+
+  return query
+    ? `${url.slice(0, queryIndex)}?${query}`
+    : url.slice(0, queryIndex);
 }
 
 function extractFileName($: cheerio.CheerioAPI): string {
@@ -294,12 +287,18 @@ function matchOne(text: string, regex: RegExp): string | null {
 /**
  * 从页面脚本中提取 ajaxfile/ajaxm 接口路径与文件 id
  * 新版页面统一走 /ajaxfile.php，旧版为 /ajaxm.php，两种都兼容；
+ * 2026-09 改版后 ajax 接口可能是跨域绝对地址（https://apifile.lanzouw.com/ajaxfile.php?file=N），
+ * 也可能是旧的相对路径（/ajaxm.php?file=N），两种都兼容；
+ * 2026-09 下旬改版后 $.ajax 的 url 改为引用变量（url : dom_ajaxs），接口地址以
+ * 字符串字面量赋给变量（var domain1 = 'https://apifile.woozooo.com/ajaxfile.php?file=N'），
+ * 此时从变量赋值里取（页面上 domain1 在前，是浏览器正常加载 killdnsweb.js 后使用的地址）；
  * 同时跳过旧模板中被注释掉的示例行（//url : '/ajaxm.php?file=1',//）
  */
 function extractAjaxFileInfo(
   code: string,
 ): { path: string; fileId: string } | null {
-  const regex = /url\s*:\s*'(\/ajax[a-z]*\.php\?file=)(\d+)/g;
+  const regex =
+    /url\s*:\s*'((?:https?:\/\/[^']*?)?(\/ajax[a-z]*\.php\?file=))(\d+)/g;
   let m: RegExpExecArray | null;
   let result: { path: string; fileId: string } | null = null;
 
@@ -307,10 +306,23 @@ function extractAjaxFileInfo(
     const prefix = code.slice(Math.max(0, m.index - 2), m.index);
 
     if (prefix.includes("//")) continue;
-    result = { path: m[1], fileId: m[2] };
+    result = { path: m[1], fileId: m[3] };
   }
 
-  return result;
+  if (result) return result;
+
+  const varRegex =
+    /[A-Za-z_$][\w$]*\s*=\s*'((?:https?:\/\/[^']*?)?(\/ajax[a-z]*\.php\?file=))(\d+)'/g;
+  let varMatch: RegExpExecArray | null;
+
+  while ((varMatch = varRegex.exec(code)) !== null) {
+    const prefix = code.slice(Math.max(0, varMatch.index - 2), varMatch.index);
+
+    if (prefix.includes("//")) continue;
+    return { path: varMatch[1], fileId: varMatch[3] };
+  }
+
+  return null;
 }
 
 /**
